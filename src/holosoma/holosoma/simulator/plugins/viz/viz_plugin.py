@@ -160,7 +160,7 @@ class CameraVizPlugin(CameraConsumerPlugin):
             create_video(
                 np.array(self._frames_video, dtype=np.uint8),
                 fps=fps,
-                save_dir=str(self._save_dir()),
+                save_dir=self._save_dir(),
                 output_format="h264",
                 wandb_logging=False,
             )

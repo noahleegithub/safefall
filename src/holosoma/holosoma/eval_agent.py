@@ -83,6 +83,18 @@ def run_eval_with_tyro(
         max_eval_steps=tyro_config.training.max_eval_steps,
     )
 
+    # Close the simulator so CLOSE hooks run (video/camera-recorder finalization). MuJoCo/MJWarp
+    # have no simulation_app to close, so this is the only place the sim is torn down for eval.
+    try:
+        if hasattr(env, "close"):
+            env.close()
+        else:
+            simulator = getattr(env, "simulator", None)
+            if simulator is not None and hasattr(simulator, "close"):
+                simulator.close()
+    except Exception as e:
+        logger.warning(f"Simulator close after eval failed: {e}")
+
     # Cleanup simulation app
     if simulation_app:
         close_simulation_app(simulation_app)
