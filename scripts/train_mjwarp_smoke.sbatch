@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=80G
 #SBATCH --time=01:00:00
-#SBATCH --output=holosoma-smoke-%j.out
+#SBATCH --output=logs/holosoma-smoke-%j.out
 
 set -euo pipefail
 
