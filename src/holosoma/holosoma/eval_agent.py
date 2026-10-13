@@ -114,6 +114,8 @@ def main() -> None:
         args=remaining_args,
         description="Overriding config on top of what's loaded.",
     )
+    # Pin the locomotion command after CLI parsing, so --eval-overrides.command takes effect.
+    overwritten_tyro_config = overwritten_tyro_config.with_eval_command()
 
     run_eval_with_tyro(overwritten_tyro_config, checkpoint_cfg, saved_cfg, saved_wandb_path, eval_cbs_cfg=eval_cbs_cfg)
 

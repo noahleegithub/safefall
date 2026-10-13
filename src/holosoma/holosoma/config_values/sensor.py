@@ -14,6 +14,7 @@ entry point).
 
 from holosoma.config_types.sensor import CameraSensorConfig, SensorMountConfig
 from holosoma.config_values.wbt.g1.sensor import (
+    chase_camera,
     head_camera,
     left_wrist_camera,
     right_wrist_camera,
@@ -44,6 +45,8 @@ overview_camera = CameraSensorConfig(
 
 # Egocentric G1 head camera, forward-facing.
 CAMERA_REGISTRY.add("g1-head", head_camera)
+# Third-person G1 chase camera: body-mounted behind the robot, looking forward (follows the robot).
+CAMERA_REGISTRY.add("g1-chase", chase_camera)
 # G1 stereo head eyes (compose both for a stereo pair).
 CAMERA_REGISTRY.add("g1-stereo-left", stereo_head_camera_left)
 CAMERA_REGISTRY.add("g1-stereo-right", stereo_head_camera_right)

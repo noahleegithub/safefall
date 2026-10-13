@@ -31,6 +31,24 @@ head_camera = CameraSensorConfig(
     update_decimation="50Hz",
 )
 
+# Third-person chase camera: mounted on the robot base (pelvis), offset BEHIND (-X) and slightly up,
+# looking forward along body +X. Because it is body-mounted it follows the robot, so a walking robot
+# stays framed for the whole clip (a fixed world camera would let it walk out of frame).
+chase_camera = CameraSensorConfig(
+    mount=SensorMountConfig(
+        target_kind="robot_link",
+        target="pelvis",
+        position=[-2.8, 0.0, 0.2],
+        # forward = body +X, up = body +Z (level, forward-facing)
+        orientation=[0.5, 0.5, -0.5, -0.5],
+    ),
+    width=640,
+    height=480,
+    vertical_fov=60.0,
+    data_types=["rgb"],
+    update_decimation=1,
+)
+
 
 def _stereo_head_camera(sign: int) -> CameraSensorConfig:
     """One eye of a stereo head pair, offset along body +Y by half the interpupillary distance."""

@@ -102,6 +102,8 @@ class EvalOverridesConfig:
     """Use deterministic spawn at tile (0,0) for reproducible evaluation."""
     xy_offset_range: float = 0.0
     """Disable XY offset for deterministic spawn position."""
+    command: list[float] | None = None
+    """Fixed [vx, vy, yaw] command to hold during evaluation. None keeps the saved config."""
 
 
 @dataclass(frozen=True)
@@ -215,6 +217,35 @@ class ExperimentConfig:
             ),
             logger=holosoma.config_values.logger.disabled if self.eval_overrides.disable_logger else self.logger,
         )
+
+    def with_eval_command(self) -> ExperimentConfig:
+        """Return a copy with the locomotion command pinned to ``eval_overrides.command``.
+
+        Must run AFTER CLI parsing so the flag is visible. Needed because
+        ``LocomotionCommand.reset()`` re-samples a random command even in eval, and ``step()``
+        is a no-op in eval, so that one random draw is held for the whole episode. Making the
+        ranges degenerate forces the re-sample to the desired command.
+        """
+        vec = self.eval_overrides.command
+        if vec is None or self.command is None:
+            return self
+        vx, vy, wz = (float(v) for v in vec)
+        term = self.command.setup_terms.get("locomotion_command")
+        if term is None:
+            return self
+        params = dict(term.params)
+        params["command_ranges"] = {
+            "lin_vel_x": [vx, vx],
+            "lin_vel_y": [vy, vy],
+            "ang_vel_yaw": [wz, wz],
+        }
+        params["stand_prob"] = 0.0
+        new_term = dataclasses.replace(term, params=params)
+        new_command = dataclasses.replace(
+            self.command,
+            setup_terms={**self.command.setup_terms, "locomotion_command": new_term},
+        )
+        return dataclasses.replace(self, command=new_command)
 
     def save_config(self, path: str) -> None:
         with open(path, "w") as file:

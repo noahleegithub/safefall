@@ -20,8 +20,8 @@
 #     sbatch scripts/eval_mjwarp_video.sbatch
 #
 # Overridable env vars:
-#   CHECKPOINT (required; local .pt or wandb://...), CAMERA, EVAL_STEPS,
-#   CAM_W, CAM_H, PLAYBACK_RATE, EXTRA_ARGS, REPO, SIF
+#   CHECKPOINT (required; local .pt or wandb://...), CAMERA (g1-chase|overview|g1-head|...),
+#   EVAL_STEPS, CAM_W, CAM_H, PLAYBACK_RATE, EVAL_COMMAND (vx,vy,yaw), EXTRA_ARGS, REPO, SIF
 #
 # Notes:
 #   * Video saved to $RUNS/eval_videos/ (host: $SCRATCH/runs/$SLURM_JOB_ID/).
@@ -30,11 +30,12 @@
 set -euo pipefail
 
 CHECKPOINT="${CHECKPOINT:-}"
-CAMERA="${CAMERA:-overview}"
+CAMERA="${CAMERA:-g1-chase}"
 EVAL_STEPS="${EVAL_STEPS:-1000}"
 CAM_W="${CAM_W:-640}"
 CAM_H="${CAM_H:-480}"
 PLAYBACK_RATE="${PLAYBACK_RATE:-1.0}"
+EVAL_COMMAND="${EVAL_COMMAND:-1.0,0.0,0.0}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 REPO="${REPO:-$SCRATCH/safefall}"
 SIF="${SIF:-$SCRATCH/images/safefall-mujoco.sif}"
@@ -81,7 +82,8 @@ python -u src/holosoma/holosoma/eval_agent.py \\
     --sensor.cam.width=${CAM_W} \\
     --sensor.cam.height=${CAM_H} \\
     --plugin.rec.save-dir=/bench/eval_videos \\
-    --plugin.rec.playback-rate=${PLAYBACK_RATE} ${EXTRA_ARGS}
+    --plugin.rec.playback-rate=${PLAYBACK_RATE} \\
+    --eval-overrides.command "[${EVAL_COMMAND}]" ${EXTRA_ARGS}
 EOF
 
 echo "=== EVAL CONFIG ==="
