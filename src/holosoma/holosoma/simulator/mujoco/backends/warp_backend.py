@@ -32,6 +32,7 @@ to ClassicBackend (CPU-only simulation).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import mujoco
@@ -230,6 +231,31 @@ class WarpBackend(IMujocoBackend):
             self.xpos_t = wp.to_torch(self.mjw_data.xpos)  # [num_envs, nbody, 3] - positions
             self.xquat_t = wp.to_torch(self.mjw_data.xquat)  # [num_envs, nbody, 4] - orientations [w,x,y,z]
             self.cvel_t = wp.to_torch(self.mjw_data.cvel)  # [num_envs, nbody, 6] - velocities [ang(3), lin(3)]
+
+            # Impact / SafeFall metrics: internal wrenches, constraint forces, and
+            # per-contact forces.  All are zero-copy views of live Warp arrays.
+            self.cfrc_int_t = wp.to_torch(self.mjw_data.cfrc_int)  # [N, nbody, 6] torque:force
+            self.qfrc_constraint_t = wp.to_torch(self.mjw_data.qfrc_constraint)  # [N, nv]
+            self.qfrc_actuator_t = wp.to_torch(self.mjw_data.qfrc_actuator)  # [N, nv]
+            self.contact_geom_t = wp.to_torch(self.mjw_data.contact.geom)  # [naconmax, 2] int
+            self.contact_worldid_t = wp.to_torch(self.mjw_data.contact.worldid)  # [naconmax]
+            self.nacon_t = wp.to_torch(self.mjw_data.nacon)  # [1]
+            self.geom_bodyid_t = wp.to_torch(self.mjw_model.geom_bodyid)  # [ngeom]
+            self._naconmax = int(self.contact_worldid_t.shape[0])
+            self._contact_arange_t = torch.arange(self._naconmax, device=self.device, dtype=torch.long)
+            self._contact_ids_wp = wp.array(
+                np.arange(self._naconmax, dtype=np.int32), dtype=int, device=self.mjw_device
+            )
+            self._contact_force_wp = wp.zeros(
+                self._naconmax, dtype=wp.spatial_vector, device=self.mjw_device
+            )
+            self._contact_force_t = wp.to_torch(self._contact_force_wp)  # [naconmax, 6]
+            # ``cfrc_int``/``cfrc_ext`` are only refreshed by mjw's post-constraint RNE
+            # pass when a force/accelerometer-type sensor is present.  The G1 has
+            # ``base_accel``, but guard for other models.
+            self._needs_rne_postconstraint = not bool(
+                getattr(self.mjw_model, "sensor_rne_postconstraint", True)
+            )
 
         # Keep reference to CPU data for rendering (synced on demand)
         self.render_data = data
@@ -512,6 +538,79 @@ class WarpBackend(IMujocoBackend):
         """
         # cfrc_ext is [num_envs, model.nbody, 6]; take first 3 (forces, drop torque).
         return self.cfrc_t[..., :3]
+
+    # ----- Impact / SafeFall metrics -----
+
+    def get_contact_forces_world(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Per-contact world-frame forces, zero-copy from the mjwarp contact solver.
+
+        The kernel writes a ``spatial_vector`` per contact; ``contact_force_fn`` fills
+        the linear (force) part first, then rotates it into the world frame when
+        ``to_world_frame=True``.  Invalid/padded ids are left at zero.
+        """
+        if self._naconmax == 0:
+            empty = torch.zeros(0, device=self.device)
+            return empty.view(0, 3), empty.long(), empty.long(), empty.long(), torch.zeros(
+                0, dtype=torch.bool, device=self.device
+            )
+
+        import mujoco_warp as mjw
+
+        with wp.ScopedDevice(self.mjw_device):
+            self._contact_force_wp.zero_()
+            mjw.contact_force(self.mjw_model, self.mjw_data, self._contact_ids_wp, True, self._contact_force_wp)
+        force = self._contact_force_t[:, :3]
+        geom = self.contact_geom_t.clamp(0, self.geom_bodyid_t.shape[0] - 1)
+        body1 = self.geom_bodyid_t[geom[:, 0]]
+        body2 = self.geom_bodyid_t[geom[:, 1]]
+        worldid = self.contact_worldid_t
+        valid = self._contact_arange_t < self.nacon_t[0]
+        return force, body1, body2, worldid, valid
+
+    def get_internal_wrenches(self) -> torch.Tensor:
+        """Return ``cfrc_int`` [N, nbody, 6] (``[torque, force]`` order)."""
+        if self._needs_rne_postconstraint:
+            import mujoco_warp as mjw
+
+            with wp.ScopedDevice(self.mjw_device):
+                mjw.rne_postconstraint(self.mjw_model, self.mjw_data)
+        return self.cfrc_int_t
+
+    def get_constraint_forces(self) -> torch.Tensor:
+        """Return ``qfrc_constraint`` [N, nv]."""
+        return self.qfrc_constraint_t
+
+    def get_actuator_forces(self) -> torch.Tensor:
+        """Return ``qfrc_actuator`` [N, nv]."""
+        return self.qfrc_actuator_t
+
+    def get_geom_friction(self, env_ids: torch.Tensor, geom_ids: Sequence[int]) -> torch.Tensor:
+        """Return sliding friction [len(env_ids), len(geom_ids)] from the per-world model."""
+        fric = self.warp_model_bridge.geom_friction
+        gids = torch.as_tensor(list(geom_ids), dtype=torch.long, device=self.device)
+        eids = env_ids.to(device=self.device, dtype=torch.long)
+        if self.num_envs > 1:
+            return fric[eids.unsqueeze(1), gids.unsqueeze(0), 0]
+        return fric[gids, 0].unsqueeze(0)
+
+    def set_geom_friction(self, env_ids: torch.Tensor, geom_ids: Sequence[int], values: torch.Tensor) -> None:
+        """Write sliding friction into the per-world-expanded ``geom_friction`` field.
+
+        The field is expanded before the CUDA graph is captured, and the captured
+        collision kernel reads the same array, so these writes take effect on the next
+        step (the same mechanism domain randomization uses).
+        """
+        fric = self.warp_model_bridge.geom_friction
+        gids = torch.as_tensor(list(geom_ids), dtype=torch.long, device=self.device)
+        eids = env_ids.to(device=self.device, dtype=torch.long)
+        vals = values.to(device=self.device, dtype=fric.dtype)
+        if self.num_envs > 1:
+            fric[eids.unsqueeze(1), gids.unsqueeze(0), 0] = vals
+        else:
+            fric[gids, 0] = vals.reshape(-1)[: len(gids)]
+
 
     def create_root_view(self, addrs: dict) -> BaseMujocoView:
         """Create root state view using zero-copy tensors.

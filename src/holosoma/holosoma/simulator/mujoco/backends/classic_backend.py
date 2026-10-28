@@ -7,6 +7,7 @@ environment simulation code.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import mujoco
@@ -183,6 +184,66 @@ class ClassicBackend(IMujocoBackend):
                 self._force_tensor[0, b2] += force
 
         return self._force_tensor
+
+    # ----- Impact / SafeFall metrics -----
+
+    def get_contact_forces_world(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Per-contact world-frame forces for the single classic environment.
+
+        ``mj_contactForce`` returns ``[force, torque]`` in the contact frame; rotate the
+        force by ``contact.frame.T`` to get the world force acting on geom2's body.
+        """
+        ncon = int(self.data.ncon)
+        force = torch.zeros(ncon, 3, device=self.device, dtype=torch.float32)
+        body1 = torch.zeros(ncon, dtype=torch.long, device=self.device)
+        body2 = torch.zeros(ncon, dtype=torch.long, device=self.device)
+        worldid = torch.zeros(ncon, dtype=torch.long, device=self.device)
+        valid = torch.ones(ncon, dtype=torch.bool, device=self.device)
+        if ncon == 0:
+            return force, body1, body2, worldid, valid
+
+        ft = np.zeros(6, dtype=np.float64)
+        for i in range(ncon):
+            contact = self.data.contact[i]
+            mujoco.mj_contactForce(self.model, self.data, i, ft)
+            frame = np.asarray(contact.frame, dtype=np.float64).reshape(3, 3)
+            world_force = frame.T @ ft[:3]
+            force[i] = torch.from_numpy(world_force).float()
+            body1[i] = int(self.model.geom_bodyid[contact.geom1])
+            body2[i] = int(self.model.geom_bodyid[contact.geom2])
+        return force, body1, body2, worldid, valid
+
+    def get_internal_wrenches(self) -> torch.Tensor:
+        """Return ``cfrc_int`` [1, nbody, 6] in ``[torque, force]`` order."""
+        # ``cfrc_int`` is only populated by the post-constraint RNE pass; call it
+        # explicitly so this path does not depend on a force/accelerometer sensor.
+        mujoco.mj_rnePostConstraint(self.model, self.data)
+        return torch.from_numpy(np.asarray(self.data.cfrc_int).copy()).float().unsqueeze(0).to(self.device)
+
+    def get_constraint_forces(self) -> torch.Tensor:
+        """Return ``qfrc_constraint`` [1, nv]."""
+        return torch.from_numpy(np.asarray(self.data.qfrc_constraint).copy()).float().unsqueeze(0).to(self.device)
+
+    def get_actuator_forces(self) -> torch.Tensor:
+        """Return ``qfrc_actuator`` [1, nv]."""
+        return torch.from_numpy(np.asarray(self.data.qfrc_actuator).copy()).float().unsqueeze(0).to(self.device)
+
+    def get_geom_friction(self, env_ids: torch.Tensor, geom_ids: Sequence[int]) -> torch.Tensor:
+        """Return sliding friction [1, len(geom_ids)] (classic is single-env)."""
+        gids = torch.as_tensor(list(geom_ids), dtype=torch.long)
+        fric = torch.from_numpy(np.asarray(self.model.geom_friction[gids.cpu().numpy(), 0]).copy()).float()
+        return fric.unsqueeze(0).to(self.device)
+
+    def set_geom_friction(self, env_ids: torch.Tensor, geom_ids: Sequence[int], values: torch.Tensor) -> None:
+        """Write sliding friction for the single classic environment."""
+        gids = torch.as_tensor(list(geom_ids), dtype=torch.long).cpu().numpy()
+        vals = values.detach().cpu().numpy()
+        if vals.ndim == 1:
+            vals = vals[None, :]
+        # num_envs == 1; ignore env_ids (validated by construction).
+        self.model.geom_friction[gids, 0] = vals[0, : len(gids)]
 
     def create_root_view(self, addrs: dict) -> BaseMujocoView:
         """Create root state view using existing tensor_views.

@@ -8,6 +8,7 @@ data synchronization.
 from __future__ import annotations
 
 import abc
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import mujoco
@@ -103,6 +104,56 @@ class IMujocoBackend(abc.ABC):
             Contact forces [num_envs, model.nbody, 3] (force only, torque dropped).
         """
         ...
+
+    # ----- Impact / SafeFall metrics -----
+    #
+    # These methods expose the raw solver quantities the impact monitor needs.  They
+    # are intentionally separate from ``compute_contact_forces`` so adding them does
+    # not change the existing reward/termination semantics (which currently read a
+    # different force extraction path).
+    def get_contact_forces_world(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Per-contact world-frame forces and their body/environment membership.
+
+        Returns
+        -------
+        force : torch.Tensor
+            ``[C, 3]`` world-frame force acting on ``body2``.
+        body1, body2 : torch.Tensor
+            ``[C]`` raw MuJoCo body ids of the two geoms.
+        worldid : torch.Tensor
+            ``[C]`` environment index for each contact.
+        valid : torch.Tensor
+            ``[C]`` bool mask; padded entries (Warp) are False.
+        """
+        raise NotImplementedError
+
+    def get_internal_wrenches(self) -> torch.Tensor:
+        """Return ``cfrc_int``: [num_envs, nbody, 6] in ``[torque, force]`` order."""
+        raise NotImplementedError
+
+    def get_constraint_forces(self) -> torch.Tensor:
+        """Return ``qfrc_constraint``: [num_envs, nv] constraint generalized forces."""
+        raise NotImplementedError
+
+    def get_actuator_forces(self) -> torch.Tensor:
+        """Return ``qfrc_actuator``: [num_envs, nv] actuator generalized forces."""
+        raise NotImplementedError
+
+    def get_geom_friction(self, env_ids: torch.Tensor, geom_ids: Sequence[int]) -> torch.Tensor:
+        """Return sliding friction ``[len(env_ids), len(geom_ids)]`` for the given geoms."""
+        raise NotImplementedError
+
+    def set_geom_friction(
+        self, env_ids: torch.Tensor, geom_ids: Sequence[int], values: torch.Tensor
+    ) -> None:
+        """Write sliding friction for the given geoms/environments.
+
+        ``values`` is ``[len(env_ids), len(geom_ids)]``.  Used by friction-based slip
+        scenarios; the model field is per-world-expanded on the Warp backend.
+        """
+        raise NotImplementedError
 
     @abc.abstractmethod
     def get_render_data(self, world_id: int = 0) -> mujoco.MjData:

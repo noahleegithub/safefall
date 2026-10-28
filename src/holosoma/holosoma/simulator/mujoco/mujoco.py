@@ -1038,6 +1038,26 @@ class MuJoCo(BaseSimulator):
         if len(env_ids) > 0:
             self.contact_forces_history[env_ids, :, :, :] = 0.0
 
+    def set_geom_friction(
+        self, geom_ids: list[int], values: torch.Tensor, env_ids: torch.Tensor | None = None
+    ) -> None:
+        """Write sliding friction for selected geoms/environments.
+
+        Used by the friction-slip scenarios. ``values`` is ``[len(env_ids), len(geom_ids)]``
+        (or ``[len(geom_ids)]`` when ``env_ids`` is None / one env).
+        """
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.sim_device)
+        if values.ndim == 1:
+            values = values.unsqueeze(0)
+        self.backend.set_geom_friction(env_ids, geom_ids, values)
+
+    def get_geom_friction(self, geom_ids: list[int], env_ids: torch.Tensor | None = None) -> torch.Tensor:
+        """Read sliding friction ``[len(env_ids), len(geom_ids)]`` for selected geoms."""
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.sim_device)
+        return self.backend.get_geom_friction(env_ids, geom_ids)
+
     def apply_torques_at_dof(self, torques: torch.Tensor) -> None:
         """Apply torques with backend-specific optimization.
 
